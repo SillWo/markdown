@@ -66,8 +66,8 @@ class App(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
             except Exception:
                 pass
 
-        self.geometry("680x620")
-        self.minsize(600, 560)
+        self.geometry("680x640")
+        self.minsize(600, 580)
         self.configure(bg=BG)
         self.resizable(True, True)
 
@@ -76,7 +76,8 @@ class App(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
         self.output_dir  = tk.StringVar()
         self.page_format = tk.StringVar(value="A4")
         self.scale_var   = tk.DoubleVar(value=1.0)
-        self.last_pdf    = None   # путь к последнему готовому PDF
+        self.last_pdf    = None   # путь к последнему PDF
+        self.last_zip    = None   # путь к последнему ZIP диаграмм
         self._process    = None   # текущий subprocess
 
         self._build_ui()
@@ -86,8 +87,7 @@ class App(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
     def _center_window(self):
         self.update_idletasks()
         w, h = self.winfo_width(), self.winfo_height()
-        sw = self.winfo_screenwidth()
-        sh = self.winfo_screenheight()
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
         self.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
 
     # ── Построение UI ────────────────────────────────────────
@@ -110,7 +110,6 @@ class App(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
                               highlightcolor=ACCENT)
         drop_frame.pack(fill=tk.X, pady=(4, 0))
 
-        # Иконка + подсказка drag-and-drop
         inner = tk.Frame(drop_frame, bg=BG_INPUT, pady=18)
         inner.pack(fill=tk.X)
 
@@ -119,8 +118,7 @@ class App(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
         self.drop_label = tk.Label(
             inner,
             text="Перетащите .md файл сюда\nили нажмите «Выбрать файл»",
-            font=FONT_LABEL, bg=BG_INPUT, fg=TEXT_DIM,
-            justify=tk.CENTER
+            font=FONT_LABEL, bg=BG_INPUT, fg=TEXT_DIM, justify=tk.CENTER
         )
         self.drop_label.pack()
 
@@ -132,14 +130,12 @@ class App(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
             command=self._browse_input
         ).pack(pady=(10, 0))
 
-        # Drag-and-drop
         if DND_AVAILABLE:
             for w in [drop_frame, inner, self.drop_label]:
                 w.drop_target_register(DND_FILES)
                 w.dnd_bind('<<Drop>>', self._on_drop)
             self._bind_hover(drop_frame, inner, self.drop_label)
 
-        # Путь выбранного файла
         path_frame = tk.Frame(root, bg=BG_CARD, pady=8, padx=12)
         path_frame.pack(fill=tk.X, pady=(6, 0))
         tk.Label(path_frame, text="Файл:", font=FONT_SMALL,
@@ -162,7 +158,7 @@ class App(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
             highlightbackground=BORDER, highlightcolor=ACCENT
         )
         self.out_entry.pack(side=tk.LEFT, fill=tk.X, expand=True,
-                             ipady=8, padx=(0, 8))
+                            ipady=8, padx=(0, 8))
 
         tk.Button(
             out_row, text="Обзор…",
@@ -178,7 +174,6 @@ class App(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
         opts = tk.Frame(root, bg=BG)
         opts.pack(fill=tk.X, pady=(4, 0))
 
-        # Формат страницы
         tk.Label(opts, text="Формат страницы:",
                  font=FONT_LABEL, bg=BG, fg=TEXT).grid(
                      row=0, column=0, sticky="w", padx=(0, 10))
@@ -190,7 +185,6 @@ class App(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
         )
         fmt_combo.grid(row=0, column=1, sticky="w")
 
-        # Масштаб диаграмм
         tk.Label(opts, text="Масштаб диаграмм:",
                  font=FONT_LABEL, bg=BG, fg=TEXT).grid(
                      row=0, column=2, sticky="w", padx=(30, 10))
@@ -202,25 +196,20 @@ class App(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
                                    font=FONT_LABEL, bg=BG, fg=ACCENT, width=4)
         self.scale_lbl.pack(side=tk.LEFT, padx=(0, 6))
 
-        scale_slider = ttk.Scale(
+        ttk.Scale(
             scale_frame, from_=0.5, to=2.0,
             variable=self.scale_var, orient=tk.HORIZONTAL,
             length=140, command=self._update_scale_label
-        )
-        scale_slider.pack(side=tk.LEFT)
+        ).pack(side=tk.LEFT)
 
-        # Стиль combobox
         style = ttk.Style()
         style.theme_use("clam")
         style.configure("TCombobox",
-                         fieldbackground=BG_INPUT,
-                         background=BG_INPUT,
-                         foreground=TEXT,
-                         selectbackground=ACCENT,
-                         bordercolor=BORDER,
-                         arrowcolor=TEXT)
+                         fieldbackground=BG_INPUT, background=BG_INPUT,
+                         foreground=TEXT, selectbackground=ACCENT,
+                         bordercolor=BORDER, arrowcolor=TEXT)
 
-        # ── Кнопка конвертации ────────────────────────────────
+        # ── Кнопка конвертации + отмена ──────────────────────
         btn_row = tk.Frame(root, bg=BG)
         btn_row.pack(fill=tk.X, pady=(20, 0))
 
@@ -229,7 +218,7 @@ class App(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
             font=("Segoe UI", 12, "bold"),
             bg=ACCENT, fg=WHITE,
             activebackground=ACCENT_DARK, activeforeground=WHITE,
-            disabledforeground=WHITE,   # текст остаётся белым когда кнопка disabled
+            disabledforeground=WHITE,
             relief=tk.FLAT, pady=12, cursor="hand2",
             command=self._start_conversion
         )
@@ -268,29 +257,39 @@ class App(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
         sb.pack(side=tk.RIGHT, fill=tk.Y)
         self.log_text.config(yscrollcommand=sb.set)
 
-        # Копирование из DISABLED Text (Ctrl+C и Ctrl+A)
         self.log_text.bind("<Control-c>", self._copy_log)
         self.log_text.bind("<Control-C>", self._copy_log)
         self.log_text.bind("<Control-a>", self._select_all_log)
         self.log_text.bind("<Control-A>", self._select_all_log)
 
-        # Цвета строк лога
-        self.log_text.tag_configure("ok",    foreground=SUCCESS)
-        self.log_text.tag_configure("err",   foreground=ERROR)
-        self.log_text.tag_configure("info",  foreground=TEXT_DIM)
-        self.log_text.tag_configure("bold",  foreground=WHITE,
-                                              font=FONT_BTN)
+        self.log_text.tag_configure("ok",   foreground=SUCCESS)
+        self.log_text.tag_configure("err",  foreground=ERROR)
+        self.log_text.tag_configure("info", foreground=TEXT_DIM)
+        self.log_text.tag_configure("bold", foreground=WHITE, font=FONT_BTN)
 
-        # ── Кнопка «Открыть PDF» ──────────────────────────────
+        # ── Кнопки результата (PDF + ZIP) ─────────────────────
+        result_row = tk.Frame(root, bg=BG)
+        result_row.pack(fill=tk.X, pady=(8, 0))
+
         self.open_btn = tk.Button(
-            root, text="📄  Открыть PDF",
+            result_row, text="📄  Открыть PDF",
             font=FONT_BTN, bg=BG_CARD, fg=TEXT_DIM,
             activebackground=BORDER, activeforeground=WHITE,
             relief=tk.FLAT, pady=8, cursor="hand2",
             state=tk.DISABLED,
             command=self._open_pdf
         )
-        self.open_btn.pack(fill=tk.X, pady=(8, 0))
+        self.open_btn.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        self.zip_btn = tk.Button(
+            result_row, text="🖼️  Скачать диаграммы (.zip)",
+            font=FONT_BTN, bg=BG_CARD, fg=TEXT_DIM,
+            activebackground=BORDER, activeforeground=WHITE,
+            relief=tk.FLAT, pady=8, cursor="hand2",
+            state=tk.DISABLED,
+            command=self._save_diagrams_zip
+        )
+        self.zip_btn.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(6, 0))
 
     # ── Вспомогательные виджеты ──────────────────────────────
     def _section(self, parent, text):
@@ -299,22 +298,17 @@ class App(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
         tk.Label(f, text=text.upper(), font=("Segoe UI", 8, "bold"),
                  bg=BG, fg=TEXT_DIM).pack(side=tk.LEFT)
         tk.Frame(f, bg=BORDER, height=1).pack(
-            side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0), pady=6
-        )
+            side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0), pady=6)
 
     def _bind_hover(self, *widgets):
         def on_enter(_):
             for w in widgets:
-                try:
-                    w.config(highlightbackground=ACCENT)
-                except Exception:
-                    pass
+                try: w.config(highlightbackground=ACCENT)
+                except Exception: pass
         def on_leave(_):
             for w in widgets:
-                try:
-                    w.config(highlightbackground=BORDER)
-                except Exception:
-                    pass
+                try: w.config(highlightbackground=BORDER)
+                except Exception: pass
         for w in widgets:
             w.bind("<Enter>", on_enter)
             w.bind("<Leave>", on_leave)
@@ -337,11 +331,9 @@ class App(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
             self.output_dir.set(folder)
 
     def _on_drop(self, event):
-        # tkinterdnd2 возвращает путь в фигурных скобках если есть пробелы
         raw = event.data.strip()
         if raw.startswith('{') and raw.endswith('}'):
             raw = raw[1:-1]
-        # Берём первый файл из списка
         path = raw.split('} {')[0].strip()
         if path.lower().endswith(('.md', '.markdown')):
             self._set_input(path)
@@ -350,18 +342,37 @@ class App(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
 
     def _set_input(self, path: str):
         self.input_path.set(path)
-        self.drop_label.config(
-            text=f"✓  {Path(path).name}",
-            fg=SUCCESS
-        )
-        # Автоустановка выходной папки если не задана
+        self.drop_label.config(text=f"✓  {Path(path).name}", fg=SUCCESS)
         if not self.output_dir.get():
             self.output_dir.set(str(Path(path).parent))
         self._log(f"Выбран файл: {path}", "info")
 
     def _open_pdf(self):
         if self.last_pdf and os.path.exists(self.last_pdf):
-            os.startfile(self.last_pdf)  # Windows
+            os.startfile(self.last_pdf)
+
+    def _save_diagrams_zip(self):
+        """Предлагает сохранить ZIP-архив диаграмм в выбранное место."""
+        if not self.last_zip or not os.path.exists(self.last_zip):
+            messagebox.showerror("Ошибка", "ZIP-архив не найден.")
+            return
+
+        default_name = Path(self.last_zip).name
+        default_dir  = Path(self.last_zip).parent
+
+        dst = filedialog.asksaveasfilename(
+            title="Сохранить архив диаграмм",
+            initialdir=default_dir,
+            initialfile=default_name,
+            defaultextension=".zip",
+            filetypes=[("ZIP архив", "*.zip"), ("Все файлы", "*.*")]
+        )
+        if not dst:
+            return
+
+        import shutil
+        shutil.copy2(self.last_zip, dst)
+        self._log(f"📦 Архив сохранён: {dst}", "ok")
 
     # ── Лог ──────────────────────────────────────────────────
     def _log(self, msg: str, tag: str = ""):
@@ -381,33 +392,26 @@ class App(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
         out_dir = self.output_dir.get().strip()
 
         if not md_path:
-            messagebox.showwarning("Файл не выбран",
-                                   "Пожалуйста, выберите .md файл.")
+            messagebox.showwarning("Файл не выбран", "Пожалуйста, выберите .md файл.")
             return
-
         if not os.path.exists(md_path):
-            messagebox.showerror("Файл не найден",
-                                 f"Файл не существует:\n{md_path}")
+            messagebox.showerror("Файл не найден", f"Файл не существует:\n{md_path}")
             return
-
         if not out_dir:
             out_dir = str(Path(md_path).parent)
             self.output_dir.set(out_dir)
 
         out_pdf = str(Path(out_dir) / (Path(md_path).stem + ".pdf"))
         self.last_pdf = out_pdf
+        self.last_zip = None
 
-        # Блокируем кнопки
         self.convert_btn.config(
-            state=tk.DISABLED,
-            text="⏳  Конвертация…",
-            bg=ACCENT_DARK     # немного темнее, текст остаётся белым (disabledforeground=WHITE)
-        )
-        self.open_btn.config(state=tk.DISABLED, fg=TEXT_DIM)
+            state=tk.DISABLED, text="⏳  Конвертация…", bg=ACCENT_DARK)
+        self.open_btn.config(state=tk.DISABLED, fg=TEXT_DIM, bg=BG_CARD)
+        self.zip_btn.config(state=tk.DISABLED, fg=TEXT_DIM, bg=BG_CARD)
         self._clear_log()
         self._log("Запуск конвертации…", "bold")
 
-        # Запускаем в отдельном потоке
         threading.Thread(
             target=self._run_conversion,
             args=(md_path, out_pdf),
@@ -415,9 +419,8 @@ class App(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
         ).start()
 
     def _run_conversion(self, md_path: str, out_pdf: str):
+        zip_path = None
         try:
-            # Если запущено как .exe (PyInstaller) — ищем во временной папке _MEIPASS
-            # Если запущено как .py — ищем рядом с gui-скриптом
             if getattr(sys, 'frozen', False):
                 base_dir = Path(sys._MEIPASS)
             else:
@@ -425,9 +428,7 @@ class App(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
             converter_path = base_dir / "md2pdf_converter.py"
 
             cmd = [
-                sys.executable,
-                "-u",                    # отключает буферизацию вывода Python
-                str(converter_path),
+                sys.executable, "-u", str(converter_path),
                 md_path, out_pdf,
                 "--format", self.page_format.get(),
                 "--scale",  f"{self.scale_var.get():.1f}",
@@ -435,17 +436,13 @@ class App(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
 
             env = os.environ.copy()
             env['PYTHONIOENCODING'] = 'utf-8'
-            env['PYTHONUNBUFFERED'] = '1'       # полностью отключаем буферизацию
+            env['PYTHONUNBUFFERED'] = '1'
 
             process = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding='utf-8',
-                errors='replace',
-                bufsize=1,
-                env=env,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding='utf-8', errors='replace',
+                bufsize=1, env=env,
             )
             self._process = process
             self.after(0, lambda: self.cancel_btn.config(state=tk.NORMAL))
@@ -459,15 +456,22 @@ class App(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
                 line = line.rstrip()
                 if not line:
                     continue
+
+                # Парсим служебную строку с путём к ZIP
+                if line.startswith('DIAGRAMS_ZIP:'):
+                    zip_path = line.split('DIAGRAMS_ZIP:', 1)[1].strip()
+                    continue  # не выводим в лог
+
                 if "✅" in line or "готов" in line.lower():
                     self.after(0, self._log, line, "ok")
                 elif "❌" in line or "⚠" in line or "ошибка" in line.lower():
                     self.after(0, self._log, line, "err")
+                elif "🖼️" in line:
+                    self.after(0, self._log, line, "ok")
                 else:
                     self.after(0, self._log, line, "info")
 
             process.wait()
-            cancelled = (process.returncode != 0 and self._process is None)
             success = process.returncode == 0 and os.path.exists(out_pdf)
             self._process = None
 
@@ -476,34 +480,34 @@ class App(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
             self.after(0, self._log, f"Критическая ошибка: {exc}", "err")
             success = False
 
-        self.after(0, self._on_done, success, out_pdf)
+        self.after(0, self._on_done, success, out_pdf, zip_path)
 
-    def _on_done(self, success: bool, out_pdf: str):
+    def _on_done(self, success: bool, out_pdf: str, zip_path=None):
         self.convert_btn.config(
-            state=tk.NORMAL,
-            text="▶  Конвертировать в PDF"
-        )
+            state=tk.NORMAL, text="▶  Конвертировать в PDF", bg=ACCENT)
+        self.cancel_btn.config(state=tk.DISABLED)
 
         if success:
             self._log(f"\nФайл сохранён: {out_pdf}", "bold")
             self.open_btn.config(state=tk.NORMAL, bg=SUCCESS, fg=WHITE)
+
+            if zip_path and os.path.exists(zip_path):
+                self.last_zip = zip_path
+                self.zip_btn.config(state=tk.NORMAL, bg="#3498db", fg=WHITE)
+                self._log(f"Архив диаграмм готов к скачиванию", "ok")
         else:
             self._log("\nКонвертация завершилась с ошибкой.", "err")
             self.open_btn.config(state=tk.DISABLED, bg=BG_CARD, fg=TEXT_DIM)
+            self.zip_btn.config(state=tk.DISABLED, bg=BG_CARD, fg=TEXT_DIM)
 
-
-
-    # ── Отмена конвертации ──────────────────────────────────
+    # ── Отмена ───────────────────────────────────────────────
     def _cancel_conversion(self):
         if self._process and self._process.poll() is None:
             self._process.kill()
             self._process = None
             self._log("⛔  Конвертация отменена пользователем.", "err")
             self.convert_btn.config(
-                state=tk.NORMAL,
-                text="▶  Конвертировать в PDF",
-                bg=ACCENT
-            )
+                state=tk.NORMAL, text="▶  Конвертировать в PDF", bg=ACCENT)
             self.cancel_btn.config(state=tk.DISABLED)
 
     # ── Копирование из лога ──────────────────────────────────
@@ -527,7 +531,6 @@ def main():
     if not DND_AVAILABLE:
         print("Подсказка: установите tkinterdnd2 для drag-and-drop:")
         print("  pip install tkinterdnd2")
-
     app = App()
     app.mainloop()
 
