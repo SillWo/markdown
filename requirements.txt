@@ -9,5 +9,4 @@ playwright>=1.40.0
 # GUI
 tkinterdnd2>=0.3.0
 
-# Сборка в .exe (только на машине разработчика)
-# pip install pyinstaller
+#

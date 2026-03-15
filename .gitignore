@@ -21,3 +21,4 @@ mermaid.min.js
 
 # PDF и временные файлы
 *.pdf
+*.zip
