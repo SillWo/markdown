@@ -66,8 +66,7 @@ class App(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
             except Exception:
                 pass
 
-        self.geometry("680x640")
-        self.minsize(600, 580)
+        self.minsize(760, 680)
         self.configure(bg=BG)
         self.resizable(True, True)
 
@@ -81,7 +80,7 @@ class App(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
         self._process    = None   # текущий subprocess
 
         self._build_ui()
-        self._center_window()
+        self._set_initial_window_size()
 
     # ── Центрирование ────────────────────────────────────────
     def _center_window(self):
@@ -89,6 +88,38 @@ class App(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
         w, h = self.winfo_width(), self.winfo_height()
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
         self.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
+
+    # ── Стартовый размер окна (чтобы весь UI был виден) ─────
+    def _set_initial_window_size(self):
+        self.update_idletasks()
+
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        req_w, req_h = self.winfo_reqwidth(), self.winfo_reqheight()
+
+        # Оставляем небольшой запас под рамки окна/панель задач.
+        max_w = max(780, sw - 40)
+        max_h = max(680, sh - 80)
+
+        target_w = min(max(req_w + 12, 920), max_w)
+        target_h = min(max(req_h + 12, 860), max_h)
+
+        # Если интерфейс не помещается даже при доступной высоте, открываем окно развернутым.
+        if req_w + 12 > max_w or req_h + 12 > max_h:
+            if sys.platform == 'win32':
+                try:
+                    self.state('zoomed')
+                    return
+                except Exception:
+                    pass
+
+            self.geometry(
+                f"{max_w}x{max_h}+{(sw-max_w)//2}+{max((sh-max_h)//2, 0)}"
+            )
+            return
+
+        self.geometry(
+            f"{target_w}x{target_h}+{(sw-target_w)//2}+{max((sh-target_h)//2, 0)}"
+        )
 
     # ── Построение UI ────────────────────────────────────────
     def _build_ui(self):
