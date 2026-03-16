@@ -253,8 +253,9 @@ mermaid.initialize({{
   body {{
     font-family: 'Segoe UI', Arial, sans-serif;
     font-size: 13px; line-height: 1.65; color: #222;
-    background: #fff; padding: 56px; max-width: {w_px}px;
+    background: #fff; padding: 24px 56px 56px; max-width: {w_px}px;
   }}
+  body > :first-child {{ margin-top: 0 !important; }}
   h1 {{ font-size:1.9em; border-bottom:2px solid #2980b9; padding-bottom:.3em; margin:1.4em 0 .5em; color:#1a252f; }}
   h2 {{ font-size:1.5em; border-bottom:1px solid #bdc3c7; padding-bottom:.2em; margin:1.3em 0 .4em; color:#2c3e50; }}
   h3 {{ font-size:1.2em; margin:1.2em 0 .4em; color:#2c3e50; }}
