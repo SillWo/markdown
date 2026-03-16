@@ -78,8 +78,10 @@ class App(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
         self.last_pdf    = None   # путь к последнему PDF
         self.last_zip    = None   # путь к последнему ZIP диаграмм
         self._process    = None   # текущий subprocess
+        self._editor_window = None
 
         self._build_ui()
+        self._bind_standard_shortcuts()
         self._set_initial_window_size()
 
     # ── Центрирование ────────────────────────────────────────
@@ -240,6 +242,20 @@ class App(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
                          foreground=TEXT, selectbackground=ACCENT,
                          bordercolor=BORDER, arrowcolor=TEXT)
 
+        # ── Редактор PDF ─────────────────────────────────────
+        editor_row = tk.Frame(root, bg=BG)
+        editor_row.pack(fill=tk.X, pady=(12, 0))
+
+        self.editor_btn = tk.Button(
+            editor_row, text="✎  Открыть редактор PDF",
+            font=FONT_BTN,
+            bg=BG_CARD, fg=WHITE,
+            activebackground=BORDER, activeforeground=WHITE,
+            relief=tk.FLAT, pady=9, cursor="hand2",
+            command=self._open_pdf_editor
+        )
+        self.editor_btn.pack(fill=tk.X)
+
         # ── Кнопка конвертации + отмена ──────────────────────
         btn_row = tk.Frame(root, bg=BG)
         btn_row.pack(fill=tk.X, pady=(20, 0))
@@ -344,6 +360,33 @@ class App(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
             w.bind("<Enter>", on_enter)
             w.bind("<Leave>", on_leave)
 
+    def _bind_standard_shortcuts(self):
+        for seq, virt in [
+            ("<Control-c>", "<<Copy>>"),
+            ("<Control-C>", "<<Copy>>"),
+            ("<Control-v>", "<<Paste>>"),
+            ("<Control-V>", "<<Paste>>"),
+            ("<Control-x>", "<<Cut>>"),
+            ("<Control-X>", "<<Cut>>"),
+            ("<Control-z>", "<<Undo>>"),
+            ("<Control-Z>", "<<Undo>>"),
+        ]:
+            self.bind_all(
+                seq,
+                lambda e, v=virt: self._dispatch_edit_shortcut(v),
+                add="+",
+            )
+
+    def _dispatch_edit_shortcut(self, virt_event: str):
+        widget = self.focus_get()
+        if not widget:
+            return
+        try:
+            widget.event_generate(virt_event)
+            return "break"
+        except Exception:
+            return
+
     # ── Обработчики ──────────────────────────────────────────
     def _update_scale_label(self, val=None):
         self.scale_lbl.config(text=f"{self.scale_var.get():.1f}×")
@@ -404,6 +447,40 @@ class App(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
         import shutil
         shutil.copy2(self.last_zip, dst)
         self._log(f"📦 Архив сохранён: {dst}", "ok")
+
+    def _open_pdf_editor(self):
+        md_path = self.input_path.get().strip()
+        if not md_path:
+            messagebox.showwarning(
+                "Файл не выбран",
+                "Сначала выберите Markdown-файл для редактирования."
+            )
+            return
+        if not os.path.exists(md_path):
+            messagebox.showerror("Файл не найден", f"Файл не существует:\n{md_path}")
+            return
+
+        if self._editor_window and self._editor_window.winfo_exists():
+            self._editor_window.focus_force()
+            return
+
+        out_dir = self.output_dir.get().strip() or str(Path(md_path).parent)
+        self.output_dir.set(out_dir)
+
+        try:
+            from pdf_editor import MermaidEditorWindow
+            self._editor_window = MermaidEditorWindow(
+                self,
+                md_path=md_path,
+                output_dir=out_dir,
+                page_format=self.page_format.get(),
+                default_scale=self.scale_var.get(),
+            )
+        except Exception as exc:
+            messagebox.showerror(
+                "Ошибка редактора",
+                f"Не удалось открыть редактор PDF:\n{exc}"
+            )
 
     # ── Лог ──────────────────────────────────────────────────
     def _log(self, msg: str, tag: str = ""):

@@ -6,7 +6,6 @@ Node.js и mmdc НЕ требуются.
 """
 
 import re
-import base64
 import tempfile
 import os
 import sys
@@ -16,7 +15,7 @@ import argparse
 import zipfile
 import urllib.request
 from pathlib import Path
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Dict, Any
 
 if sys.platform == 'win32':
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -42,6 +41,90 @@ def _get_mermaid_js() -> str:
         urllib.request.urlretrieve(url, path)
         print(f'✓ mermaid.min.js скачан ({path.stat().st_size // 1024} КБ)', flush=True)
     return path.read_text(encoding='utf-8')
+
+
+def _clamp_scale(value: float, default: float = 1.0) -> float:
+    """Ограничивает масштаб в диапазоне [0.5, 2.0]."""
+    try:
+        scale = float(value)
+    except (TypeError, ValueError):
+        scale = default
+    return max(0.5, min(2.0, scale))
+
+
+def _normalize_transform(raw: Any, default: float = 1.0) -> Dict[str, float]:
+    """
+    Приводит значение трансформации диаграммы к виду {"x": float, "y": float}.
+    Поддерживает:
+      - число (uniform): 1.2
+      - dict: {"x": 1.2, "y": 0.9}
+    """
+    if isinstance(raw, dict):
+        sx = _clamp_scale(raw.get('x', default), default=default)
+        sy = _clamp_scale(raw.get('y', default), default=default)
+        return {'x': sx, 'y': sy}
+
+    s = _clamp_scale(raw, default=default)
+    return {'x': s, 'y': s}
+
+
+def _load_diagram_transforms(path: str) -> Dict[int, Dict[str, float]]:
+    """
+    Загружает профиль масштабов/трансформаций диаграмм из JSON.
+    Поддерживает форматы:
+      1) {"0": 1.2, "1": 0.8}
+      2) {"diagram_scales": {"0": 1.2, ...}}
+      3) {"diagram_transforms": {"0": {"x": 1.2, "y": 0.9}, ...}}
+    """
+    src = Path(path)
+    data = json.loads(src.read_text(encoding='utf-8'))
+
+    if not isinstance(data, dict):
+        return {}
+
+    raw_transforms = data.get('diagram_transforms')
+    raw_scales = data.get('diagram_scales')
+    raw = raw_transforms if isinstance(raw_transforms, dict) else (
+        raw_scales if isinstance(raw_scales, dict) else data
+    )
+    if not isinstance(raw, dict):
+        return {}
+
+    transforms: Dict[int, Dict[str, float]] = {}
+    for k, v in raw.items():
+        try:
+            idx = int(k)
+        except (TypeError, ValueError):
+            continue
+        transforms[idx] = _normalize_transform(v)
+    return transforms
+
+
+def _detect_mermaid_kind(code: str) -> str:
+    """Пытается определить тип Mermaid-диаграммы по первой непустой строке."""
+    first = ""
+    for line in code.splitlines():
+        s = line.strip()
+        if s:
+            first = s.lower()
+            break
+    if first.startswith("gantt"):
+        return "gantt"
+    if first.startswith("sequence"):
+        return "sequence"
+    if first.startswith("classdiagram"):
+        return "class"
+    if first.startswith("statediagram"):
+        return "state"
+    if first.startswith("mindmap"):
+        return "mindmap"
+    if first.startswith("journey"):
+        return "journey"
+    if first.startswith("pie"):
+        return "pie"
+    if first.startswith("graph") or first.startswith("flowchart"):
+        return "flowchart"
+    return "other"
 
 
 # ──────────────────────────────────────────────────────────────
@@ -77,14 +160,36 @@ class MarkdownToPDFConverter:
 
     # ── Рендеринг одной Mermaid-диаграммы ────────────────────
     def _render_mermaid(self, code: str, idx: int,
-                        mermaid_js: str) -> Optional[str]:
+                        mermaid_js: str,
+                        scale_x: float = 1.0,
+                        scale_y: float = 1.0) -> Optional[str]:
         """
         1. Рендерит Mermaid → SVG через Playwright + mermaid.js
         2. На отдельной странице делает PNG-скриншот для ZIP
         3. Патчит SVG (убирает фиксированные размеры) для PDF
         Возвращает сырой SVG-текст или None при ошибке.
         """
-        font_size = max(10, int(14 * self.mermaid_scale))
+        scale_x = _clamp_scale(scale_x, default=self.mermaid_scale)
+        scale_y = _clamp_scale(scale_y, default=self.mermaid_scale)
+        kind = _detect_mermaid_kind(code)
+        is_gantt = kind == "gantt"
+
+        # Для gantt ограничиваем минимальный "каркас" диаграммы, чтобы элементы не слипались.
+        layout_x, layout_y = scale_x, scale_y
+        element_x, element_y = 1.0, 1.0
+        if is_gantt:
+            min_layout_x = 0.9
+            min_layout_y = 0.9
+            layout_x = max(scale_x, min_layout_x)
+            layout_y = max(scale_y, min_layout_y)
+            element_x = scale_x / layout_x
+            element_y = scale_y / layout_y
+
+        font_scale = (scale_x + scale_y) / 2.0
+        font_size = max(10, int(14 * font_scale))
+        gantt_font = max(9, int(14 * max(0.7, (element_x + element_y) / 2.0)))
+        gantt_bar_height = max(9, int(22 * max(0.6, element_y)))
+        gantt_bar_gap = 6
 
         # HTML для рендеринга Mermaid → SVG
         render_html = f"""<!DOCTYPE html>
@@ -103,7 +208,16 @@ mermaid.initialize({{
   themeVariables: {{ fontSize: '{font_size}px' }},
   flowchart: {{ useMaxWidth: true, curve: 'basis' }},
   sequence:  {{ useMaxWidth: true }},
-  gantt:     {{ useMaxWidth: true }}
+  gantt: {{
+    useMaxWidth: false,
+    barHeight: {gantt_bar_height},
+    barGap: {gantt_bar_gap},
+    topPadding: 55,
+    leftPadding: 110,
+    rightPadding: 40,
+    gridLineStartPadding: 110,
+    fontSize: '{gantt_font}px'
+  }}
 }});
 (async () => {{
   try {{
@@ -118,7 +232,6 @@ mermaid.initialize({{
 </body></html>"""
 
         from playwright.sync_api import sync_playwright
-        import re as _re
 
         try:
             with sync_playwright() as pw:
@@ -147,17 +260,22 @@ mermaid.initialize({{
                     'el => el.getBoundingClientRect().height')
 
                 if w and h and w > 0 and h > 0:
-                    vw = max(int(w) + 40, 400)
-                    vh = max(int(h) + 40, 200)
+                    base_w = int(w)
+                    base_h = int(h)
                 else:
-                    vw, vh = 1200, 800
+                    base_w, base_h = 1200, 800
+
+                scaled_w = max(int(base_w * layout_x), 120)
+                scaled_h = max(int(base_h * layout_y), 80)
+                vw = max(scaled_w + 40, 400)
+                vh = max(scaled_h + 40, 200)
 
                 screenshot_html = f"""<!DOCTYPE html>
 <html><head><meta charset="UTF-8">
 <style>
   * {{ margin: 0; padding: 0; box-sizing: border-box; }}
   body {{ background: white; padding: 16px; display: inline-block; }}
-  svg {{ display: block; }}
+  svg {{ display: block; width: {scaled_w}px; height: {scaled_h}px; }}
 </style></head>
 <body>{svg_original}</body></html>"""
 
@@ -176,15 +294,52 @@ mermaid.initialize({{
                 if os.path.exists(png_path) and os.path.getsize(png_path) > 0:
                     self.diagram_pngs.append(png_path)
 
-                # ── Патчим SVG для PDF: убираем фиксированные размеры ──
+                # ── Патчим SVG для PDF с учетом индивидуального масштаба ──
+                gantt_fix_js = ""
+                if is_gantt:
+                    gantt_fix_js = f"""
+                        const shrinkX = {element_x:.6};
+                        const shrinkY = {element_y:.6};
+                        if (shrinkX < 0.999 || shrinkY < 0.999) {{
+                            const textScale = Math.max(0.65, Math.min(shrinkX, shrinkY));
+                            el.querySelectorAll('text').forEach(t => {{
+                                const fs = parseFloat(getComputedStyle(t).fontSize || '12');
+                                if (!Number.isNaN(fs) && fs > 0) {{
+                                    t.style.fontSize = `${{Math.max(8, fs * textScale)}}px`;
+                                }}
+                            }});
+                            el.querySelectorAll(
+                                'rect.task, rect.task0, rect.task1, rect.active, rect.done, rect.crit, rect.milestone'
+                            ).forEach(r => {{
+                                const x = parseFloat(r.getAttribute('x') || '0');
+                                const y = parseFloat(r.getAttribute('y') || '0');
+                                const w = parseFloat(r.getAttribute('width') || '0');
+                                const h = parseFloat(r.getAttribute('height') || '0');
+                                if (w > 0) {{
+                                    const nw = Math.max(1, w * shrinkX);
+                                    r.setAttribute('x', String(x + (w - nw) / 2));
+                                    r.setAttribute('width', String(nw));
+                                }}
+                                if (h > 0) {{
+                                    const nh = Math.max(1, h * shrinkY);
+                                    r.setAttribute('y', String(y + (h - nh) / 2));
+                                    r.setAttribute('height', String(nh));
+                                }}
+                            }});
+                        }}
+                    """
+
                 svg_for_pdf = page1.eval_on_selector(
                     '#container svg',
-                    """el => {
-                        el.removeAttribute('width');
-                        el.removeAttribute('height');
+                    f"""el => {{
+                        {gantt_fix_js}
+                        el.setAttribute('width', '{scaled_w}');
+                        el.setAttribute('height', '{scaled_h}');
+                        el.style.width = '{scaled_w}px';
+                        el.style.height = '{scaled_h}px';
                         el.style.maxWidth = '100%';
                         return el.outerHTML;
-                    }"""
+                    }}"""
                 )
 
                 browser.close()
@@ -195,7 +350,13 @@ mermaid.initialize({{
             return None
 
     # ── Обработка всех блоков ```mermaid ─────────────────────
-    def _process_mermaid(self, md_text: str, mermaid_js: str) -> str:
+    def _process_mermaid(
+        self,
+        md_text: str,
+        mermaid_js: str,
+        diagram_scales: Optional[Dict[int, float]] = None,
+        diagram_transforms: Optional[Dict[int, Dict[str, float]]] = None,
+    ) -> str:
         pattern  = re.compile(r'```mermaid\s*\n(.*?)```', re.DOTALL)
         diagrams = []
 
@@ -205,10 +366,23 @@ mermaid.initialize({{
 
         md_text = pattern.sub(replacer, md_text)
 
+        scales = diagram_scales or {}
+        transforms = diagram_transforms or {}
+
         for idx, code in enumerate(diagrams):
-            print(f'  Рендеринг диаграммы #{idx+1}/{len(diagrams)}...',
+            if idx in transforms:
+                tr = _normalize_transform(transforms.get(idx), default=self.mermaid_scale)
+            else:
+                s = _clamp_scale(scales.get(idx, self.mermaid_scale))
+                tr = {'x': s, 'y': s}
+
+            print(
+                f'  Рендеринг диаграммы #{idx+1}/{len(diagrams)} '
+                f'(x={tr["x"]:.2f}, y={tr["y"]:.2f})...',
                   flush=True)
-            data_uri = self._render_mermaid(code, idx, mermaid_js)
+            data_uri = self._render_mermaid(
+                code, idx, mermaid_js, scale_x=tr['x'], scale_y=tr['y']
+            )
 
             if data_uri:
                 # Вставляем SVG инлайн — Playwright PDF гарантированно его рендерит
@@ -333,8 +507,14 @@ mermaid.initialize({{
             browser.close()
 
     # ── Главный метод ────────────────────────────────────────
-    def convert(self, input_md: str, output_pdf: str,
-                title: Optional[str] = None) -> bool:
+    def convert(
+        self,
+        input_md: str,
+        output_pdf: str,
+        title: Optional[str] = None,
+        diagram_scales: Optional[Dict[int, float]] = None,
+        diagram_transforms: Optional[Dict[int, Dict[str, float]]] = None,
+    ) -> bool:
 
         self.temp_dir     = tempfile.mkdtemp()
         self.diagram_pngs = []
@@ -359,7 +539,12 @@ mermaid.initialize({{
             mermaid_js = _get_mermaid_js()
 
             print('🔷 Обработка диаграмм Mermaid...', flush=True)
-            md_text = self._process_mermaid(md_text, mermaid_js)
+            md_text = self._process_mermaid(
+                md_text,
+                mermaid_js,
+                diagram_scales=diagram_scales,
+                diagram_transforms=diagram_transforms,
+            )
 
             print('📝 Конвертация Markdown → HTML...', flush=True)
             import markdown
@@ -411,12 +596,30 @@ def main():
     p.add_argument('--title',  '-t')
     p.add_argument('--scale',  '-s', type=float, default=1.0)
     p.add_argument('--format', '-f', default='A4')
+    p.add_argument(
+        '--diagram-scales',
+        help='Путь к JSON-профилю индивидуальных масштабов Mermaid'
+    )
     args = p.parse_args()
+
+    diagram_transforms = None
+    if args.diagram_scales:
+        try:
+            diagram_transforms = _load_diagram_transforms(args.diagram_scales)
+            print(f'🔧 Загружен профиль масштабов: {len(diagram_transforms)} шт', flush=True)
+        except Exception as exc:
+            print(f'⚠ Не удалось загрузить профиль масштабов: {exc}', file=sys.stderr)
+            diagram_transforms = None
 
     ok = MarkdownToPDFConverter(
         page_format=args.format,
         mermaid_scale=args.scale,
-    ).convert(args.input, args.output, args.title)
+    ).convert(
+        args.input,
+        args.output,
+        args.title,
+        diagram_transforms=diagram_transforms,
+    )
     sys.exit(0 if ok else 1)
 
 #
